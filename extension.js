@@ -27,6 +27,10 @@ const SessionSaver = new Lang.Class({
 
     _init: function() {
         this._cacheDir = GLib.get_user_cache_dir() + '/gnome-shell/';
+        let dir = Gio.file_new_for_path(this._cacheDir);
+        if (!dir.query_exists(null)) {
+            GLib.mkdir_with_parents(this._cacheDir, 0x1c0); // 0x1c0 = octal 0700
+        }
         this._cacheFile = 'session-state.json';
         this._appSys = Shell.AppSystem.get_default();
         this._windowTracker = Shell.WindowTracker.get_default();
