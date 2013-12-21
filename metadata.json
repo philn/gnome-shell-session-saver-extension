@@ -1,0 +1,8 @@
+{
+ "uuid": "session-saver@base-art.net",
+ "name": "Session state saver",
+ "description": "Saves the state of the applications tracked by the Shell and restore them at next log-in.",
+ "shell-version": [ "3.10" ],
+ "url": "http://github.com/philn/gnome-shell-session-saver-extension",
+ "version": 1
+}
