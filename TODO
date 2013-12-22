@@ -1,2 +1,4 @@
 
 - track workspace changes
+- white list for some uninteresting windows (gkrellm...)
+- settings UI: display current state
