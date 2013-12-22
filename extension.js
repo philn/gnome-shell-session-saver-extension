@@ -36,6 +36,7 @@ const SessionSaver = new Lang.Class({
         this._windowTracker = Shell.WindowTracker.get_default();
         this._windowCreatedId = 0;
         this._state = {};
+        this._restoredState = {};
         this._appStateChangeSignals = {};
     },
 
@@ -70,36 +71,101 @@ const SessionSaver = new Lang.Class({
 
         let apps = this._state[workspaceIndex];
         if (!apps)
-            apps = [appId,];
+            apps = {};
         else
-            apps.push(appId);
+            apps[appId] = '';
+
         this._state[workspaceIndex] = apps;
         this._syncJson();
 
-        let handler = app.connect('notify::state',
-                                  Lang.bind(this,
-                                            this._onAppStateChanged, app));
-        this._appStateChangeSignals[appId] = handler;
+        // TODO: connect to window::workspace-changed signal. params: old_workspace
+
+        let win = window.get_compositor_private();
+        let positionHandler = win.connect('position-changed',
+                                          Lang.bind(this, this._onPositionChanged, appId));
+        let sizeHandler = win.connect('size-changed',
+                                      Lang.bind(this, this._onSizeChanged, appId));
+        let stateHandler = app.connect('notify::state',
+                                       Lang.bind(this,
+                                                 this._onAppStateChanged, window));
+        this._appStateChangeSignals[appId] = [stateHandler, positionHandler, sizeHandler];
         log("App " + appId + " in workspace " + workspaceIndex);
     },
 
-    _onAppStateChanged: function(app) {
-        if (app.state != Shell.AppState.STOPPED)
-            return;
+    _onPositionChanged: function(windowActor, appId) {
+        let window = windowActor.meta_window;
+        let rect = window.get_outer_rect();
+        let workspaceIndex = windowActor.get_workspace();
+        this._updateWindowRect(workspaceIndex, appId, rect);
+    },
 
+    _onSizeChanged: function(windowActor, appId) {
+        let rect = windowActor.meta_window.get_outer_rect();
+        let workspaceIndex = windowActor.get_workspace();
+        this._updateWindowRect(workspaceIndex, appId, rect);
+    },
+
+    _updateWindowRect: function(workspaceIndex, appId, rect) {
+        let apps = this._state[workspaceIndex];
+        if (!apps)
+            return;
+        apps[appId] = [rect.x, rect.y, rect.width, rect.height];
+        this._state[workspaceIndex] = apps;
+        this._syncJson();
+    },
+
+    _onAppStateChanged: function(app, paramSpec, window) {
+        if (app.state == Shell.AppState.STOPPED)
+            this._appStopped(app, window);
+        if (app.state == Shell.AppState.RUNNING)
+            this._appStarted(app, window);
+    },
+
+    _appStarted: function(app, window) {
+        log("App %s now running".format(app.get_id()));
+        let workspace = window.get_workspace();
+        let workspaceIndex = workspace.index();
+        let restoredApps = this._restoredState[workspaceIndex];
+        if (!restoredApps)
+            return;
         let appId = app.get_id();
-        let handler = this._appStateChangeSignals[appId];
-        app.disconnect(handler);
-        delete this._appStateChangeSignals[appId];
+        if (appId in restoredApps) {
+            let coords = restoredApps[appId];
+            if (coords) {
+                delete this._restoredState[workspaceIndex][appId];
+                Mainloop.idle_add(Lang.bind(this, function() {
+                   window.move_resize_frame(true, coords[0], coords[1], coords[2], coords[3]);
+                    return false;
+                }));
+            }
+        }
+    },
+
+    _appStopped: function(app, window) {
+        this._forgetApp(app, window);
 
         for (let j = 0; j <= global.screen.n_workspaces; j++) {
             let apps = this._state[j];
             if (!apps)
                 continue;
-            if (apps.indexOf(appId) !== -1)
-                apps.splice(appId, 1);
+            let appId = app.get_id();
+            delete apps[appId];
         }
         this._syncJson();
+    },
+
+    _forgetApp: function(app, window) {
+        let appId = app.get_id();
+        let [stateHandler, positionHandler, sizeHandler] = this._appStateChangeSignals[appId];
+        if (window) {
+            let win = window.get_compositor_private();
+            if (win) {
+                win.disconnect(positionHandler);
+                win.disconnect(sizeHandler);
+            }
+        }
+        app.disconnect(stateHandler);
+        delete this._appStateChangeSignals[appId];
     },
 
     _syncJson: function() {
@@ -131,16 +197,15 @@ const SessionSaver = new Lang.Class({
     },
 
     _restoreApps: function() {
-        let state = this._readJson();
-        if (!state)
+        this._restoredState = this._readJson();
+        if (!this._restoredState)
             return;
 
         for (let index = 0; index < global.screen.n_workspaces; index++) {
-            let apps = state[index];
+            let apps = this._restoredState[index];
             if (!apps)
                 continue;
-            for (let appIndex = 0; appIndex < apps.length; appIndex++) {
-                let appId = apps[appIndex];
+            for (let appId in apps) {
                 let app = this._appSys.lookup_app(appId);
                 if (!app)
                     continue;
@@ -164,7 +229,19 @@ const SessionSaver = new Lang.Class({
     },
 
     disable: function() {
+        for (let workspaceIndex in this._state) {
+            let apps = this._state[workspaceIndex];
+            if (!apps)
+                continue;
+            for (let appId in apps) {
+                let app = this._appSys.lookup_app(appId);
+                if (!app)
+                    continue;
+                this._forgetApp(app, null);
+            }
+        }
         this._state = {};
+        this._restoreApps = {};
         if (this._windowCreatedId) {
             global.screen.get_display().disconnect(this._windowCreatedId);
             this._windowCreatedId = 0;
